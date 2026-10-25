@@ -1,0 +1,643 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>OBD Dash</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&family=Barlow:wght@400;500&display=swap">
+<style>
+/* Layout: alert banner, then one ranked group of six zone-bar gauges (oil temp full width on top), then secondary readings, then tools. */
+:root{
+  --bg:#e8ebee; --panel:#f7f8f9; --line:#cfd5db; --fg:#14181c; --dim:#5b6670;
+  --accent:#b85f00; --accent-fg:#fff; --ok:#1a7f45; --warn:#9a6a00; --bad:#c0262d; --bad-fg:#fff; --track:#d6dce2;
+  --display:'Barlow Condensed','Arial Narrow',sans-serif; --body:'Barlow',system-ui,sans-serif; --mono:'IBM Plex Mono',ui-monospace,Menlo,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0d1114; --panel:#161b20; --line:#272f37; --fg:#e8edf1; --dim:#8b97a2;
+  --accent:#ffa21f; --accent-fg:#1a1100; --ok:#46d17f; --warn:#f5c542; --bad:#ff6b6b; --bad-fg:#1a0000; --track:#242c33; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0d1114; --panel:#161b20; --line:#272f37; --fg:#e8edf1; --dim:#8b97a2;
+  --accent:#ffa21f; --accent-fg:#1a1100; --ok:#46d17f; --warn:#f5c542; --bad:#ff6b6b; --bad-fg:#1a0000; --track:#242c33; color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font-family:var(--body);font-size:15px;
+  padding-block:14px 40px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.wrap{max-width:880px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
+header{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+h1{font-family:var(--display);font-weight:700;font-size:28px;letter-spacing:.04em;text-transform:uppercase;margin:0}
+.status{display:inline-flex;align-items:center;gap:7px;font-family:var(--mono);font-size:12px;color:var(--dim)}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--dim)}
+.dot.on{background:var(--ok);box-shadow:0 0 0 3px color-mix(in srgb,var(--ok) 25%,transparent)}
+.dot.demo{background:var(--accent)}
+button,select,input{font:inherit;color:inherit}
+button{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:9px 14px;cursor:pointer;min-height:40px}
+button:hover{border-color:var(--dim)}
+button.primary{background:var(--accent);color:var(--accent-fg);border-color:var(--accent);font-weight:500}
+button.danger{border-color:var(--bad);color:var(--bad)}
+button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px;min-width:0}
+.lbl,.unit{font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim)}
+h2{font-family:var(--display);font-weight:600;font-size:18px;letter-spacing:.06em;text-transform:uppercase;margin:0 0 8px}
+.sub{font-size:13px;color:var(--dim);margin:-4px 0 10px}
+
+/* alert banner and full-screen flash */
+.banner{background:var(--bad);color:var(--bad-fg);padding:10px 14px;border-radius:8px;font-family:var(--display);font-weight:700;font-size:24px;letter-spacing:.04em;text-transform:uppercase}
+#flash{position:fixed;inset:0;background:var(--bad);opacity:0;pointer-events:none;z-index:50}
+#flash.on{animation:fl 1s steps(1,end) infinite}
+#flash.on.fast{animation-duration:.6s}
+@keyframes fl{0%,49%{opacity:.55}50%,100%{opacity:0}}
+@media (prefers-reduced-motion:reduce){#flash.on{animation:none;opacity:.25}}
+
+/* priority gauges */
+.vitals{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.g{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px;min-width:0;display:flex;flex-direction:column;gap:6px}
+.g.wide{grid-column:1/-1}
+.g[data-s="bad"]{border-color:var(--bad);border-width:2px;padding:11px}
+.g[data-s="warn"]{border-color:var(--warn)}
+.gt{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.rk{font-family:var(--display);font-weight:700;font-size:15px;width:22px;height:22px;border-radius:50%;border:1px solid var(--dim);display:inline-flex;align-items:center;justify-content:center;color:var(--dim)}
+.pill{margin-left:auto;font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--dim);text-align:right;min-width:0}
+.g[data-s="ok"] .pill{color:var(--ok)}
+.g[data-s="warn"] .pill{color:var(--warn)}
+.g[data-s="bad"] .pill{color:var(--bad);font-weight:500}
+.gv{display:flex;align-items:baseline;gap:6px}
+.gv .v{font-family:var(--display);font-weight:600;font-size:46px;line-height:1;font-variant-numeric:tabular-nums}
+.g.wide .gv .v{font-size:76px}
+.g[data-s="ok"] .v{color:var(--ok)}
+.g[data-s="warn"] .v{color:var(--warn)}
+.g[data-s="bad"] .v{color:var(--bad)}
+.g[data-s="na"] .v{color:var(--dim)}
+.bar{position:relative;height:14px;margin-top:4px}
+.zs{position:absolute;inset:0;border-radius:7px;overflow:hidden}
+.z{position:absolute;top:0;bottom:0}
+.z-none{background:var(--track)}
+.z-ok{background:color-mix(in srgb,var(--ok) 60%,var(--track))}
+.z-warn{background:color-mix(in srgb,var(--warn) 60%,var(--track))}
+.z-bad{background:color-mix(in srgb,var(--bad) 60%,var(--track))}
+.z-info{background:color-mix(in srgb,var(--accent) 55%,var(--track))}
+.mk{position:absolute;top:-4px;width:4px;height:22px;border-radius:2px;background:var(--fg);box-shadow:0 0 0 2px var(--panel);transform:translateX(-50%);transition:left .2s linear}
+.g[data-s="na"] .mk{display:none}
+.marks{position:relative;height:14px;font-family:var(--mono);font-size:10px;color:var(--dim)}
+.marks span{position:absolute;top:0;font-variant-numeric:tabular-nums}
+.gh{font-size:12px;color:var(--dim);min-height:1.3em}
+
+.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px}
+.tile{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:10px 12px;display:flex;flex-direction:column;gap:2px;min-width:0}
+.tile .v{font-family:var(--display);font-weight:600;font-size:32px;font-variant-numeric:tabular-nums;line-height:1.1}
+.tile .u{font-size:12px;color:var(--dim);font-family:var(--mono)}
+.tile.warn .v{color:var(--bad)}
+.codes{display:flex;flex-direction:column;gap:6px;margin-top:10px}
+.code{display:flex;gap:12px;align-items:baseline;border-top:1px solid var(--line);padding-top:6px}
+.code b{font-family:var(--mono);font-weight:500;color:var(--accent);min-width:56px}
+.note{color:var(--dim);font-size:13px;margin:6px 0 0}
+select{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:8px;min-height:40px}
+label.f{display:flex;flex-direction:column;gap:3px;min-width:0}
+pre{font-family:var(--mono);font-size:12px;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:8px;height:150px;overflow:auto;margin:8px 0;white-space:pre-wrap;word-break:break-all}
+input[type=text]{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:9px;font-family:var(--mono);flex:1;min-width:0;width:100%}
+#err{color:var(--bad);font-size:13px;min-height:1em}
+summary{cursor:pointer;font-family:var(--display);font-weight:600;font-size:18px;letter-spacing:.06em;text-transform:uppercase}
+fieldset{border:1px solid var(--line);border-radius:6px;margin:12px 0 0;padding:10px;display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;min-width:0}
+legend{font-family:var(--mono);font-size:12px;padding:0 6px}
+.live{color:var(--dim)}
+</style>
+<style>:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0}[hidden]{display:none!important}img{max-width:100%}</style>
+</head>
+<body>
+
+<div id="flash" aria-hidden="true"></div>
+<div class="wrap">
+  <header>
+    <h1>OBD Dash</h1>
+    <span class="status"><span class="dot" id="dot"></span><span id="stat">Not connected</span></span>
+  </header>
+
+  <div class="row">
+    <button class="primary" id="btnConnect">Connect adapter</button>
+    <button id="btnDemo">Demo mode</button>
+    <button id="btnDisc" hidden>Disconnect</button>
+  </div>
+  <div id="err" role="status"></div>
+  <div class="banner" id="banner" role="alert" hidden></div>
+
+  <section aria-label="Priority gauges">
+    <h2>Engine vitals</h2>
+    <p class="sub">Ranked by priority. Green is in range, amber is a caution, red needs action.</p>
+    <div class="vitals" id="vitals"></div>
+  </section>
+
+  <section class="tiles" id="tiles" aria-label="Other readings"></section>
+
+  <section class="panel">
+    <h2>Trouble codes</h2>
+    <div class="row">
+      <button id="btnRead">Read codes</button>
+      <button id="btnClear" class="danger">Clear codes</button>
+    </div>
+    <div class="codes" id="codes"><p class="note">Connect (or use demo mode), then read codes.</p></div>
+  </section>
+
+  <section class="panel">
+    <h2>Logging</h2>
+    <div class="row">
+      <button id="btnLog">Start logging</button>
+      <button id="btnCopy">Copy CSV</button>
+      <button id="btnSave">Save CSV</button>
+      <button id="btnPeaks">Reset peaks</button>
+      <span class="status" id="logN">0 rows</span>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <label class="f"><span class="lbl">Speed units</span><select id="uSpd"><option value="mph">mph</option><option value="kmh">km/h</option></select></label>
+    </div>
+    <p class="note">Temperatures are in °F and pressures in psi. The log uses the same units.</p>
+  </section>
+
+  <details class="panel" id="setupBox">
+    <summary>Sensor setup</summary>
+    <p class="note">Oil pressure and knock retard are not on the standard OBD-II list for most cars. They need a manufacturer-specific code, usually a mode 22 request like 221234. Enter the code for your car, the formula that turns the reply bytes (A, B, C, D) into a number, and the units that number is in. Oil temperature and charge air temperature start with the standard codes, which some cars do not answer.</p>
+    <div id="setup"></div>
+    <div class="row" style="margin-top:12px"><button class="primary" id="btnSaveSens">Save sensors</button><span class="note" id="setMsg"></span></div>
+  </details>
+
+  <section class="panel">
+    <h2>Adapter terminal</h2>
+    <pre id="term"></pre>
+    <form class="row" id="termForm" autocomplete="off">
+      <input type="text" id="termIn" placeholder="e.g. ATRV or 0100" aria-label="Raw command" style="flex:1">
+      <button type="submit">Send</button>
+    </form>
+    <p class="note">Sends raw ELM327 commands. Reading only; nothing here writes to the ECU.</p>
+  </section>
+</div>
+
+<script>
+(function(){
+'use strict';
+var $=function(s){return document.querySelector(s)};
+
+/* Alert thresholds. Change these numbers to retune the colors and alarms. Units: °F, psi. */
+var CFG={
+  oil:{coldBelow:165,hotAbove:230,clearBelow:228,limit:240,min:100,max:260},
+  cool:{lo:160,hi:216,min:120,max:240},
+  cat:{hi:150,min:60,max:200},
+  knock:{warn:-0.05,danger:-2,min:-6,max:1},
+  press:{idleMin:20,driveOk:28,wotOk:45,wotBad:35,min:0,max:80,idleRpm:1200,idleSpd:3,wotThr:80,engineOn:400},
+  boost:{min:-15,max:30,coldMax:5}
+};
+var DTC_INFO={P0016:'Crankshaft/camshaft position correlation',P0087:'Fuel rail pressure too low',P0101:'Mass airflow sensor range',P0113:'Intake air temp sensor high',P0128:'Coolant below thermostat temperature',P0171:'System too lean (bank 1)',P0172:'System too rich (bank 1)',P0234:'Turbo overboost',P0299:'Turbo underboost',P0300:'Random/multiple cylinder misfire',P0301:'Cylinder 1 misfire',P0302:'Cylinder 2 misfire',P0303:'Cylinder 3 misfire',P0304:'Cylinder 4 misfire',P0420:'Catalyst efficiency below threshold (bank 1)',P0442:'EVAP small leak',P0455:'EVAP large leak',P0507:'Idle speed higher than expected'};
+
+var S={vals:{},miss:{},peak:{},connected:false,demo:false,logging:false,log:[],t0:0,alarm:false};
+var units={spd:'mph'};
+try{var u0=JSON.parse(localStorage.getItem('obd-units')||'null');if(u0&&u0.spd)units.spd=u0.spd}catch(e){}
+
+/* ---------- sensors ---------- */
+/* Standard PIDs. Values are stored already converted to °F / kPa / %. */
+var STD=[
+ {key:'rpm',cmd:'010C',fast:1,f:function(b){return (b[0]*256+(b[1]||0))/4}},
+ {key:'spd',cmd:'010D',fast:1,f:function(b){return b[0]}},
+ {key:'thr',cmd:'0111',fast:1,f:function(b){return b[0]*100/255}},
+ {key:'map',cmd:'010B',fast:1,f:function(b){return b[0]}},
+ {key:'coolF',cmd:'0105',fast:1,f:function(b){return (b[0]-40)*9/5+32}},
+ {key:'load',cmd:'0104',f:function(b){return b[0]*100/255}},
+ {key:'volt',cmd:'0142',f:function(b){return (b[0]*256+(b[1]||0))/1000}},
+ {key:'fuel',cmd:'012F',f:function(b){return b[0]*100/255}},
+ {key:'baro',cmd:'0133',f:function(b){return b[0]}}
+];
+/* Sensors the person can point at a different code. */
+var SENS=[
+ {id:'oilT',key:'oilF',label:'Oil temperature',kind:'temp',units:['C','F'],def:{cmd:'015C',expr:'A-40',unit:'C',hdr:''}},
+ {id:'cat',key:'catF',label:'Charge air temperature',kind:'temp',units:['C','F'],def:{cmd:'010F',expr:'A-40',unit:'C',hdr:''}},
+ {id:'oilP',key:'oilP',label:'Oil pressure',kind:'press',units:['psi','kPa','bar'],def:{cmd:'',expr:'A',unit:'psi',hdr:''}},
+ {id:'knock',key:'knock',label:'Knock retard (degrees)',kind:'deg',units:null,def:{cmd:'',expr:'A',unit:'',hdr:''}}
+];
+function loadSens(){
+  var o={};SENS.forEach(function(s){o[s.id]=Object.assign({},s.def)});
+  try{var j=JSON.parse(localStorage.getItem('obd-sensors')||'null');
+    if(j)SENS.forEach(function(s){if(j[s.id])o[s.id]=Object.assign(o[s.id],j[s.id])})}catch(e){}
+  return o;
+}
+var CS=loadSens();
+
+function makeFormula(e){
+  e=String(e||'').toUpperCase().replace(/\s+/g,'');
+  if(!e||!/^[ABCD0-9+\-*/().]+$/.test(e))return null;
+  try{var f=new Function('A','B','C','D','return ('+e+');');var t=f(1,2,3,4);if(!isFinite(t))return null;return f}catch(x){return null}
+}
+function convert(s,u,r){
+  if(s.kind==='temp')return u==='F'?r:r*9/5+32;
+  if(s.kind==='press')return u==='kPa'?r*0.145038:u==='bar'?r*14.5038:r;
+  return r;
+}
+function queries(){
+  var q=STD.slice();
+  SENS.forEach(function(s){
+    var c=CS[s.id];if(!c||!c.cmd)return;
+    var f=makeFormula(c.expr);if(!f)return;
+    q.push({key:s.key,cmd:c.cmd,hdr:c.hdr,fast:1,f:function(b){
+      var r=f(b[0]||0,b[1]||0,b[2]||0,b[3]||0);
+      return isFinite(r)?convert(s,c.unit,r):null}});
+  });
+  return q;
+}
+function configured(id){return !!(CS[id]&&CS[id].cmd)}
+
+/* ---------- gauges ---------- */
+function pMode(){
+  var v=S.vals;
+  if(v.thr!=null&&v.thr>=CFG.press.wotThr)return 'wot';
+  if(v.rpm!=null&&v.rpm<CFG.press.idleRpm&&(v.spd==null||v.spd<CFG.press.idleSpd))return 'idle';
+  return 'drive';
+}
+function minus(n){return String(n).replace('-','−')}
+var P=CFG.press;
+var G=[
+ {id:'oil',label:'Oil temp',unit:'°F',min:CFG.oil.min,max:CFG.oil.max,d:0,wide:1,peak:'max',
+  get:function(){return S.vals.oilF},
+  zones:function(){return [[CFG.oil.min,CFG.oil.coldBelow,'none'],[CFG.oil.coldBelow,CFG.oil.hotAbove,'ok'],[CFG.oil.hotAbove,CFG.oil.max,'bad']]},
+  marks:function(){return [CFG.oil.coldBelow,CFG.oil.hotAbove]},
+  status:function(v){return v>CFG.oil.hotAbove?['bad','Too hot']:v>=CFG.oil.coldBelow?['ok','In range']:['none','Warming up · light boost only']},
+  hint:function(){return 'Screen flashes above '+CFG.oil.hotAbove+' · limit '+CFG.oil.limit},
+  na:function(){return configured('oilT')?'No reading':'Needs sensor code'}},
+ {id:'cool',label:'Coolant',unit:'°F',min:CFG.cool.min,max:CFG.cool.max,d:0,peak:'max',
+  get:function(){return S.vals.coolF},
+  zones:function(){return [[CFG.cool.min,CFG.cool.lo,'none'],[CFG.cool.lo,CFG.cool.hi,'ok'],[CFG.cool.hi,CFG.cool.max,'bad']]},
+  marks:function(){return [CFG.cool.lo,CFG.cool.hi]},
+  status:function(v){return v>CFG.cool.hi?['bad','Too hot']:v>=CFG.cool.lo?['ok','In range']:['none','Warming up']},
+  hint:function(){return 'Target '+CFG.cool.lo+'–'+CFG.cool.hi},
+  na:function(){return 'No reading'}},
+ {id:'cat',label:'Charge air',unit:'°F',min:CFG.cat.min,max:CFG.cat.max,d:0,peak:'max',
+  get:function(){return S.vals.catF},
+  zones:function(){return [[CFG.cat.min,CFG.cat.hi,'ok'],[CFG.cat.hi,CFG.cat.max,'bad']]},
+  marks:function(){return [CFG.cat.hi]},
+  status:function(v){return v<=CFG.cat.hi?['ok','OK']:['bad','Too hot']},
+  hint:function(){return 'Keep under '+CFG.cat.hi},
+  na:function(){return 'No reading'}},
+ {id:'knock',label:'Knock retard',unit:'°',min:CFG.knock.min,max:CFG.knock.max,d:1,peak:'min',
+  get:function(){return S.vals.knock},
+  fmt:function(v){return v<CFG.knock.warn?minus(v.toFixed(1)):'0.0'},
+  zones:function(){return [[CFG.knock.min,CFG.knock.danger,'bad'],[CFG.knock.danger,CFG.knock.warn,'warn'],[CFG.knock.warn,CFG.knock.max,'ok']]},
+  marks:function(){return [CFG.knock.danger,0]},
+  status:function(v){return v<=CFG.knock.danger?['bad','Danger']:v<CFG.knock.warn?['warn','Knock detected']:['ok','Clean']},
+  hint:function(){return 'Should stay at 0 · danger at '+minus(CFG.knock.danger)},
+  na:function(){return configured('knock')?'No reading':'Needs sensor code'}},
+ {id:'press',label:'Oil pressure',unit:'psi',min:P.min,max:P.max,d:0,peak:null,
+  get:function(){return S.vals.oilP},
+  zones:function(){var m=pMode();
+    return m==='idle'?[[P.min,P.idleMin,'bad'],[P.idleMin,P.max,'ok']]
+         :m==='wot'?[[P.min,P.wotBad,'bad'],[P.wotBad,P.wotOk,'warn'],[P.wotOk,P.max,'ok']]
+         :[[P.min,P.idleMin,'bad'],[P.idleMin,P.driveOk,'warn'],[P.driveOk,P.max,'ok']]},
+  marks:function(){var m=pMode();return m==='idle'?[P.idleMin]:m==='wot'?[P.wotBad,P.wotOk]:[P.idleMin,P.driveOk]},
+  status:function(v){var m=pMode();
+    if(m==='idle')return v<P.idleMin?['bad','Idle · low']:['ok','Idle · OK'];
+    if(m==='wot')return v<P.wotBad?['bad','Full throttle · low']:v<P.wotOk?['warn','Full throttle · below '+P.wotOk]:['ok','Full throttle · OK'];
+    return v<P.idleMin?['bad','Driving · low']:v<P.driveOk?['warn','Driving · below '+P.driveOk]:['ok','Driving · OK']},
+  hint:function(){var m=pMode();return m==='idle'?'Idle: above '+P.idleMin:m==='wot'?'Full throttle: above '+P.wotOk:'Driving: around 30'},
+  na:function(){return configured('oilP')?'No reading':'Needs sensor code'}},
+ {id:'boost',label:'Boost',unit:'psi',min:CFG.boost.min,max:CFG.boost.max,d:1,wide:1,peak:'max',
+  get:function(){var m=S.vals.map;if(m==null)return null;return (m-(S.vals.baro!=null?S.vals.baro:101.3))*0.145038},
+  fmt:function(v){return (v<0?'−':'+')+Math.abs(v).toFixed(1)},
+  zones:function(){return [[CFG.boost.min,0,'none'],[0,CFG.boost.max,'info']]},
+  marks:function(){return [CFG.boost.min,0,CFG.boost.max]},
+  status:function(v){var cold=S.vals.oilF!=null&&S.vals.oilF<CFG.oil.coldBelow;
+    if(cold&&v>CFG.boost.coldMax)return ['warn','Engine cold · ease off'];
+    return ['info',v<0?'Vacuum':'Boost']},
+  hint:function(){return 'Manifold pressure minus barometric'},
+  na:function(){return 'No reading'}}
+];
+var vitals=$('#vitals');
+G.forEach(function(g,i){
+  var el=document.createElement('article');
+  el.className='g'+(g.wide?' wide':'');el.id='g-'+g.id;el.dataset.s='na';
+  el.innerHTML='<div class="gt"><span class="rk" title="Priority '+(i+1)+'">'+(i+1)+'</span><span class="lbl">'+g.label+'</span><span class="pill"></span></div>'+
+    '<div class="gv"><span class="v">—</span><span class="unit">'+g.unit+'</span></div>'+
+    '<div class="bar"><div class="zs"></div><i class="mk"></i></div><div class="marks"></div><div class="gh"></div>';
+  vitals.appendChild(el);g.el=el;
+});
+function pct(g,v){return Math.max(0,Math.min(100,(v-g.min)/(g.max-g.min)*100))}
+function drawZones(g){
+  var zs=g.zones(),ms=g.marks(),sig=JSON.stringify([zs,ms]);
+  if(g.sig===sig)return;g.sig=sig;
+  g.el.querySelector('.zs').innerHTML=zs.map(function(z){var a=pct(g,z[0]),b=pct(g,z[1]);return '<div class="z z-'+z[2]+'" style="left:'+a+'%;width:'+(b-a)+'%"></div>'}).join('');
+  g.el.querySelector('.marks').innerHTML=ms.map(function(m){var p=pct(g,m),t=p<9?'0':p>91?'-100%':'-50%';return '<span style="left:'+p+'%;transform:translateX('+t+')">'+minus(m)+'</span>'}).join('');
+}
+
+/* ---------- other readings ---------- */
+function SP(k){return units.spd==='mph'?k*0.621371:k}
+var TILES=[
+ {id:'spd',label:'Speed',get:function(){return S.vals.spd==null?null:SP(S.vals.spd)},u:function(){return units.spd==='mph'?'mph':'km/h'},d:0},
+ {id:'thr',label:'Throttle',get:function(){return S.vals.thr},u:function(){return '%'},d:0},
+ {id:'load',label:'Engine load',get:function(){return S.vals.load},u:function(){return '%'},d:0},
+ {id:'volt',label:'Module voltage',get:function(){return S.vals.volt},u:function(){return 'V'},d:1,warn:function(v){return v<11.8}},
+ {id:'fuel',label:'Fuel level',get:function(){return S.vals.fuel},u:function(){return '%'},d:0}
+];
+var tilesEl=$('#tiles');
+TILES.forEach(function(t){
+  var d=document.createElement('div');d.className='tile';d.id='tile-'+t.id;
+  d.innerHTML='<span class="lbl">'+t.label+'</span><span class="v">—</span><span class="u"></span>';
+  tilesEl.appendChild(d);
+});
+
+/* ---------- render ---------- */
+function render(){
+  G.forEach(function(g){
+    var v=g.get(),el=g.el,s,t,vEl=el.querySelector('.v'),peakTxt='';
+    if(v==null){s='na';t=g.na();vEl.textContent='—'}
+    else{
+      var r=g.status(v);s=r[0];t=r[1];
+      vEl.textContent=g.fmt?g.fmt(v):v.toFixed(g.d);
+      el.querySelector('.mk').style.left=pct(g,v)+'%';
+      if(g.peak){var p=S.peak[g.id];
+        if(p==null||(g.peak==='max'?v>p:v<p))S.peak[g.id]=v}
+    }
+    if(g.peak&&S.peak[g.id]!=null)peakTxt=' · peak '+(g.fmt?g.fmt(S.peak[g.id]):S.peak[g.id].toFixed(g.d));
+    drawZones(g);
+    el.dataset.s=s;
+    el.querySelector('.pill').textContent=t;
+    el.querySelector('.gh').textContent=g.hint()+peakTxt;
+  });
+  TILES.forEach(function(t){
+    var el=$('#tile-'+t.id),val=t.get();
+    el.querySelector('.v').textContent=val==null?'—':val.toFixed(t.d);
+    el.querySelector('.u').textContent=t.u();
+    el.classList.toggle('warn',val!=null&&!!t.warn&&t.warn(val));
+  });
+  /* alarms */
+  var v=S.vals,oil=v.oilF;
+  if(oil!=null&&oil>CFG.oil.hotAbove)S.alarm=true;
+  else if(oil==null||oil<CFG.oil.clearBelow)S.alarm=false;
+  $('#flash').className=S.alarm?(oil>=CFG.oil.limit?'on fast':'on'):'';
+  var al=[];
+  if(S.alarm)al.push('Oil temp '+Math.round(oil)+'°F');
+  if(v.knock!=null&&v.knock<=CFG.knock.danger)al.push('Knock retard '+minus(v.knock.toFixed(1))+'°');
+  if(v.oilP!=null&&(v.rpm==null||v.rpm>P.engineOn)&&G[4].status(v.oilP)[0]==='bad')al.push('Oil pressure '+Math.round(v.oilP)+' psi');
+  var b=$('#banner');b.hidden=!al.length;b.textContent=al.join(' · ');
+  SENS.forEach(function(s){
+    var el=$('#live-'+s.id);if(!el)return;
+    var x=v[s.key];el.textContent=x==null?'· no reading':'· reading '+x.toFixed(1);
+  });
+}
+function setStatus(txt,mode){
+  $('#stat').textContent=txt;
+  $('#dot').className='dot'+(mode?' '+mode:'');
+  $('#btnDisc').hidden=!(S.connected||S.demo);
+  $('#btnConnect').hidden=S.connected||S.demo;
+  $('#btnDemo').hidden=S.connected||S.demo;
+}
+function err(m){$('#err').textContent=m||''}
+function term(s){var t=$('#term');t.textContent+=s+'\n';t.scrollTop=t.scrollHeight}
+
+/* ---------- ELM327 over BLE ---------- */
+var SERVICES=[0xfff0,0xffe0,0xffe5,0x18f0,0xfee0,0xff00,0xaf30,0xae00,'e7810a71-73ae-499d-8c15-faa9aef0c3f2','49535343-fe7d-4ae5-8fa9-9fafd205e455','0000fff0-0000-1000-8000-00805f9b34fb'];
+var dev=null,wChar=null,nChar=null,rx='',pending=null,queue=Promise.resolve(),wake=null,curHdr=null;
+
+function onData(ev){
+  rx+=new TextDecoder().decode(ev.target.value);
+  if(rx.indexOf('>')>=0&&pending){
+    var out=rx.replace('>','').trim();rx='';
+    clearTimeout(pending.t);var p=pending;pending=null;p.res(out);
+  }
+}
+async function writeStr(s){
+  var data=new TextEncoder().encode(s);
+  for(var i=0;i<data.length;i+=20){
+    var c=data.slice(i,i+20);
+    if(wChar.properties.writeWithoutResponse)await wChar.writeValueWithoutResponse(c);
+    else await wChar.writeValue(c);
+  }
+}
+function ask(cmd,timeout){
+  var p=queue.then(function(){
+    return new Promise(function(res,rej){
+      rx='';
+      pending={res:res,t:setTimeout(function(){pending=null;rej(new Error('No reply to '+cmd))},timeout||5000)};
+      term('> '+cmd);
+      writeStr(cmd+'\r').catch(function(e){if(pending){clearTimeout(pending.t);pending=null}rej(e)});
+    });
+  }).then(function(r){term(r.replace(/\r/g,'\n').trim());return r});
+  queue=p.catch(function(){});
+  return p;
+}
+/* Reply tag is the request mode plus 0x40, then the PID: 01xx answers 41xx, 22xxxx answers 62xxxx. */
+function bytesFor(resp,cmd){
+  var c=resp.replace(/[\s\r\n]/g,'').toUpperCase();
+  if(!c||c.indexOf('NODATA')>=0||c.indexOf('UNABLE')>=0||c.indexOf('ERROR')>=0||c.indexOf('?')>=0)return null;
+  var tag=(parseInt(cmd.slice(0,2),16)+0x40).toString(16).toUpperCase().padStart(2,'0')+cmd.slice(2).toUpperCase();
+  var i=c.indexOf(tag);if(i<0)return null;
+  var hex=c.slice(i+tag.length),out=[];
+  for(var k=0;k+1<hex.length;k+=2){var n=parseInt(hex.substr(k,2),16);if(isNaN(n))break;out.push(n)}
+  return out.length?out:null;
+}
+async function setHeader(h){
+  h=h||null;if(h===curHdr)return;
+  await ask('ATSH'+(h||'7DF'));curHdr=h;
+}
+async function connect(){
+  err('');
+  if(!navigator.bluetooth){err('This browser has no Web Bluetooth. On iPhone, open this page in the Bluefy browser.');return}
+  var step='pick';
+  try{
+    dev=await navigator.bluetooth.requestDevice({acceptAllDevices:true,optionalServices:SERVICES});
+    setStatus('Connecting…');step='connect';
+    dev.addEventListener('gattserverdisconnected',function(){if(S.connected)stop('Adapter disconnected')});
+    var server=await dev.gatt.connect();step='services';
+    var svcs=await server.getPrimaryServices();
+    for(var s of svcs){
+      var chars=await s.getCharacteristics();
+      for(var c of chars){
+        var p=c.properties;
+        if(!nChar&&(p.notify||p.indicate))nChar=c;
+        if(!wChar&&(p.write||p.writeWithoutResponse))wChar=c;
+      }
+    }
+    if(!nChar||!wChar)throw new Error('Could not find a serial-style characteristic on this device.');
+    step='notify';await nChar.startNotifications();
+    nChar.addEventListener('characteristicvaluechanged',onData);
+    step='init';S.connected=true;S.t0=Date.now();curHdr=null;S.miss={};
+    setStatus('Initializing '+(dev.name||'adapter'),'on');
+    await ask('ATZ',4000);
+    for(var cmd of ['ATE0','ATL0','ATS0','ATH0','ATSP0'])await ask(cmd);
+    await ask('0100',12000).catch(function(){});
+    setStatus((dev.name||'Adapter')+' · live','on');
+    try{wake=await navigator.wakeLock.request('screen')}catch(e){}
+    pollLoop();
+  }catch(e){
+    stop();
+    if(step==='pick'&&e&&e.name==='NotFoundError')return;
+    var m='Failed at "'+step+'": '+((e&&e.name)?e.name+' · ':'')+((e&&e.message)||String(e));
+    if(step==='services')m+=' (the adapter may use a Bluetooth service this app does not look for)';
+    err(m);term(m);
+  }
+}
+async function pollLoop(){
+  var n=0;
+  while(S.connected&&!S.demo){
+    var qs=queries();
+    for(var q of qs){
+      if(!S.connected)break;
+      if(!q.fast&&n%5)continue;
+      if((S.miss[q.key]||0)>=3&&n%40)continue;
+      try{
+        await setHeader(q.hdr);
+        var r=await ask(q.cmd,3000),b=bytesFor(r,q.cmd);
+        if(b){S.vals[q.key]=q.f(b);S.miss[q.key]=0}
+        else{S.miss[q.key]=(S.miss[q.key]||0)+1;if(S.miss[q.key]>=3)S.vals[q.key]=null}
+      }catch(e){if(!S.connected)break}
+      render();
+    }
+    n++;logRow();
+  }
+}
+function stop(msg){
+  S.connected=false;S.demo=false;clearInterval(demoT);
+  try{if(dev&&dev.gatt.connected)dev.gatt.disconnect()}catch(e){}
+  try{if(wake)wake.release()}catch(e){}
+  nChar=wChar=dev=null;pending=null;
+  S.vals={};S.miss={};S.alarm=false;render();
+  setStatus(msg||'Not connected');
+}
+
+/* ---------- demo mode: cycles through every color zone and the oil alarm ---------- */
+var demoT=null;
+function demo(){
+  err('');S.demo=true;S.vals={};S.t0=Date.now();
+  setStatus('Demo mode (simulated data)','demo');
+  var t=0;
+  demoT=setInterval(function(){
+    t+=0.12;
+    var th=Math.max(0,Math.sin(t*0.6)*0.5+0.5);
+    var knock=th>0.8?-Math.round((th-0.8)*16*2)/2:0;
+    S.vals={rpm:900+th*5200+Math.sin(t*3)*40,spd:th*120,thr:th*95,load:20+th*70,map:35+th*160,baro:101,
+      coolF:188+40*Math.sin(t*0.11+1),catF:120+40*Math.sin(t*0.2),oilF:175+62*Math.sin(t*0.15),
+      oilP:20+th*32-(th>0.95?4:0)+Math.sin(t*2)*0.6,knock:knock,volt:14.1+Math.sin(t)*0.1,fuel:62};
+    render();logRow();
+  },150);
+  render();
+}
+
+/* ---------- trouble codes ---------- */
+function decodeDtcs(resp){
+  var found=[];
+  resp.split(/[\r\n]+/).forEach(function(line){
+    var c=line.replace(/\s/g,'').toUpperCase();
+    if(c.indexOf('43')!==0)return;
+    c=c.slice(2);
+    for(var i=0;i+3<c.length;i+=4){
+      var a=parseInt(c.substr(i,2),16),b=c.substr(i+2,2);
+      if(a===0&&b==='00')continue;
+      var code='PCBU'[a>>6]+((a>>4)&3)+(a&15).toString(16).toUpperCase()+b;
+      if(found.indexOf(code)<0)found.push(code);
+    }
+  });
+  return found;
+}
+function showCodes(list){
+  var el=$('#codes');
+  if(!list.length){el.innerHTML='<p class="note">No stored trouble codes.</p>';return}
+  el.innerHTML=list.map(function(c){
+    return '<div class="code"><b>'+c+'</b><span>'+(DTC_INFO[c]||'No description saved for this code. Search the code with your car model.')+'</span></div>';
+  }).join('');
+}
+var armed=false,armT=null;
+$('#btnRead').onclick=async function(){
+  err('');
+  if(S.demo){showCodes(['P0420','P0171']);return}
+  if(!S.connected){err('Connect the adapter first.');return}
+  try{await setHeader(null);showCodes(decodeDtcs(await ask('03',8000)))}catch(e){err(e.message)}
+};
+$('#btnClear').onclick=async function(){
+  var b=$('#btnClear');err('');
+  if(!S.connected&&!S.demo){err('Connect the adapter first.');return}
+  if(!armed){armed=true;b.textContent='Tap again to confirm';
+    armT=setTimeout(function(){armed=false;b.textContent='Clear codes'},5000);
+    $('#codes').insertAdjacentHTML('afterbegin','<p class="note" id="warnClr">Clearing also erases freeze-frame data and resets readiness monitors, so an emissions test may fail until the car has been driven.</p>');
+    return}
+  armed=false;clearTimeout(armT);b.textContent='Clear codes';
+  var w=$('#warnClr');if(w)w.remove();
+  if(S.demo){showCodes([]);return}
+  try{await setHeader(null);await ask('04',8000);showCodes([])}catch(e){err(e.message)}
+};
+
+/* ---------- logging ---------- */
+function logRow(){
+  if(!S.logging)return;
+  var v=S.vals,bo=G[5].get();
+  S.log.push([((Date.now()-S.t0)/1000).toFixed(2),v.rpm,v.spd==null?null:SP(v.spd),v.thr,v.load,bo,v.oilF,v.coolF,v.catF,v.oilP,v.knock,v.volt,v.fuel]
+    .map(function(x){return x==null?'':typeof x==='number'?+x.toFixed(2):x}));
+  $('#logN').textContent=S.log.length+' rows';
+}
+function csv(){
+  var head=['seconds','rpm','speed_'+units.spd,'throttle_pct','load_pct','boost_psi','oil_temp_F','coolant_F','charge_air_F','oil_psi','knock_deg','volts','fuel_pct'];
+  return [head.join(',')].concat(S.log.map(function(r){return r.join(',')})).join('\n');
+}
+$('#btnLog').onclick=function(){
+  S.logging=!S.logging;
+  $('#btnLog').textContent=S.logging?'Stop logging':'Start logging';
+  $('#btnLog').classList.toggle('primary',S.logging);
+  if(S.logging&&!S.log.length)S.t0=Date.now();
+};
+$('#btnCopy').onclick=async function(){
+  if(!S.log.length){err('Nothing logged yet.');return}
+  try{await navigator.clipboard.writeText(csv());err('');
+    $('#btnCopy').textContent='Copied';setTimeout(function(){$('#btnCopy').textContent='Copy CSV'},1500)}
+  catch(e){term(csv());err('Clipboard blocked. The CSV was printed in the terminal below so you can select it.')}
+};
+$('#btnSave').onclick=function(){
+  if(!S.log.length){err('Nothing logged yet.');return}
+  try{
+    var a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv()],{type:'text/csv'}));
+    a.download='obd-log-'+new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')+'.csv';
+    document.body.appendChild(a);a.click();a.remove();
+  }catch(e){err('Saving is blocked here. Use Copy CSV instead.')}
+};
+$('#btnPeaks').onclick=function(){S.peak={};render()};
+
+/* ---------- sensor setup ---------- */
+var setupEl=$('#setup');
+SENS.forEach(function(s){
+  var f=document.createElement('fieldset');
+  f.innerHTML='<legend>'+s.label+' <span class="live" id="live-'+s.id+'"></span></legend>'+
+    '<label class="f"><span class="lbl">Code</span><input type="text" id="s-'+s.id+'-cmd" placeholder="e.g. 221234" autocapitalize="characters" autocomplete="off"></label>'+
+    '<label class="f"><span class="lbl">Formula</span><input type="text" id="s-'+s.id+'-expr" placeholder="A-40" autocomplete="off"></label>'+
+    (s.units?'<label class="f"><span class="lbl">Result is in</span><select id="s-'+s.id+'-unit">'+s.units.map(function(u){return '<option value="'+u+'">'+(u==='C'||u==='F'?'°'+u:u)+'</option>'}).join('')+'</select></label>':'')+
+    '<label class="f"><span class="lbl">ECU address (optional)</span><input type="text" id="s-'+s.id+'-hdr" placeholder="e.g. 7E0" autocomplete="off"></label>';
+  setupEl.appendChild(f);
+  var c=CS[s.id];
+  $('#s-'+s.id+'-cmd').value=c.cmd;$('#s-'+s.id+'-expr').value=c.expr;$('#s-'+s.id+'-hdr').value=c.hdr||'';
+  if(s.units)$('#s-'+s.id+'-unit').value=c.unit||s.units[0];
+});
+$('#btnSaveSens').onclick=function(){
+  var bad=null,next={};
+  SENS.forEach(function(s){
+    var c=($('#s-'+s.id+'-cmd').value||'').replace(/\s/g,'').toUpperCase();
+    var e=($('#s-'+s.id+'-expr').value||'').trim()||'A';
+    var h=($('#s-'+s.id+'-hdr').value||'').trim().toUpperCase();
+    var un=s.units?$('#s-'+s.id+'-unit').value:'';
+    if(c&&!/^([0-9A-F]{2}){2,4}$/.test(c))bad=bad||s.label+': the code must be hex digits, like 015C or 221234.';
+    else if(c&&!makeFormula(e))bad=bad||s.label+': the formula can only use A, B, C, D, numbers and + - * / ( ).';
+    else if(h&&!/^[0-9A-F]{3,8}$/.test(h))bad=bad||s.label+': the ECU address must be hex digits, like 7E0.';
+    next[s.id]={cmd:c,expr:e,hdr:h,unit:un};
+  });
+  if(bad){$('#setMsg').textContent=bad;return}
+  CS=next;S.miss={};
+  try{localStorage.setItem('obd-sensors',JSON.stringify(CS))}catch(e){}
+  $('#setMsg').textContent='Saved.';render();
+};
+
+/* ---------- misc ---------- */
+$('#btnConnect').onclick=connect;
+$('#btnDemo').onclick=demo;
+$('#btnDisc').onclick=function(){stop()};
+$('#termForm').onsubmit=async function(e){
+  e.preventDefault();
+  var i=$('#termIn'),c=i.value.trim();if(!c)return;i.value='';
+  if(!S.connected){term('(not connected)');return}
+  try{await ask(c)}catch(x){term(x.message)}
+};
+var uS=$('#uSpd');uS.value=units.spd;
+uS.onchange=function(){units.spd=uS.value;try{localStorage.setItem('obd-units',JSON.stringify(units))}catch(e){}render()};
+render();setStatus('Not connected');
+})();
+</script>
+</body>
+</html>
