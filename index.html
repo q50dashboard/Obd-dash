@@ -1,0 +1,419 @@
+<title>OBD Dash</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&family=Barlow:wght@400;500&display=swap">
+<style>
+/* Layout: instrument-cluster header (two big arc gauges), tile grid of secondary readings, then tools (codes, logging, raw terminal). */
+:root{
+  --bg:#e8ebee; --panel:#f7f8f9; --line:#cfd5db; --fg:#14181c; --dim:#5b6670;
+  --accent:#b85f00; --accent-fg:#fff; --ok:#1a7f45; --bad:#c0262d; --track:#d6dce2;
+  --display:'Barlow Condensed','Arial Narrow',sans-serif; --body:'Barlow',system-ui,sans-serif; --mono:'IBM Plex Mono',ui-monospace,Menlo,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0d1114; --panel:#161b20; --line:#272f37; --fg:#e8edf1; --dim:#8b97a2;
+  --accent:#ffa21f; --accent-fg:#1a1100; --ok:#46d17f; --bad:#ff6b6b; --track:#242c33; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0d1114; --panel:#161b20; --line:#272f37; --fg:#e8edf1; --dim:#8b97a2;
+  --accent:#ffa21f; --accent-fg:#1a1100; --ok:#46d17f; --bad:#ff6b6b; --track:#242c33; color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font-family:var(--body);font-size:15px;
+  padding-block:14px 40px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.wrap{max-width:880px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
+header{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+h1{font-family:var(--display);font-weight:700;font-size:28px;letter-spacing:.04em;text-transform:uppercase;margin:0}
+.status{display:inline-flex;align-items:center;gap:7px;font-family:var(--mono);font-size:12px;color:var(--dim)}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--dim)}
+.dot.on{background:var(--ok);box-shadow:0 0 0 3px color-mix(in srgb,var(--ok) 25%,transparent)}
+.dot.demo{background:var(--accent)}
+button,select,input{font:inherit;color:inherit}
+button{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:9px 14px;cursor:pointer;min-height:40px}
+button:hover{border-color:var(--dim)}
+button.primary{background:var(--accent);color:var(--accent-fg);border-color:var(--accent);font-weight:500}
+button.danger{border-color:var(--bad);color:var(--bad)}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.gauges{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px;min-width:0}
+.gauge{position:relative;text-align:center}
+.gauge svg{width:100%;max-width:260px;height:auto;display:block;margin:0 auto}
+.gauge .read{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;padding-top:22px;pointer-events:none}
+.big{font-family:var(--display);font-weight:600;font-size:64px;line-height:1;font-variant-numeric:tabular-nums}
+.unit,.lbl{font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim)}
+.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px}
+.tile{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:10px 12px;display:flex;flex-direction:column;gap:2px;min-width:0}
+.tile .v{font-family:var(--display);font-weight:600;font-size:34px;font-variant-numeric:tabular-nums;line-height:1.1}
+.tile .u{font-size:12px;color:var(--dim);font-family:var(--mono)}
+.tile.warn .v{color:var(--bad)}
+h2{font-family:var(--display);font-weight:600;font-size:18px;letter-spacing:.06em;text-transform:uppercase;margin:0 0 8px}
+.codes{display:flex;flex-direction:column;gap:6px;margin-top:10px}
+.code{display:flex;gap:12px;align-items:baseline;border-top:1px solid var(--line);padding-top:6px}
+.code b{font-family:var(--mono);font-weight:500;color:var(--accent);min-width:56px}
+.note{color:var(--dim);font-size:13px;margin:6px 0 0}
+select{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:8px;min-height:40px}
+label.f{display:flex;flex-direction:column;gap:3px}
+pre{font-family:var(--mono);font-size:12px;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:8px;height:150px;overflow:auto;margin:8px 0;white-space:pre-wrap;word-break:break-all}
+input[type=text]{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:9px;font-family:var(--mono);flex:1;min-width:0}
+#err{color:var(--bad);font-size:13px;min-height:1em}
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>OBD Dash</h1>
+    <div class="row">
+      <span class="status"><span class="dot" id="dot"></span><span id="stat">Not connected</span></span>
+    </div>
+  </header>
+
+  <div class="row">
+    <button class="primary" id="btnConnect">Connect adapter</button>
+    <button id="btnDemo">Demo mode</button>
+    <button id="btnDisc" hidden>Disconnect</button>
+  </div>
+  <div id="err" role="status"></div>
+
+  <section class="gauges" aria-label="Main gauges">
+    <div class="panel gauge">
+      <svg viewBox="0 0 200 190" aria-hidden="true">
+        <path class="track" d="" fill="none" stroke="var(--track)" stroke-width="12" stroke-linecap="round" pathLength="100"/>
+        <path id="arcRpm" d="" fill="none" stroke="var(--accent)" stroke-width="12" stroke-linecap="round" pathLength="100" stroke-dasharray="0 100"/>
+      </svg>
+      <div class="read"><div class="big" id="rpm">—</div><div class="unit">RPM</div></div>
+    </div>
+    <div class="panel gauge">
+      <svg viewBox="0 0 200 190" aria-hidden="true">
+        <path class="track" d="" fill="none" stroke="var(--track)" stroke-width="12" stroke-linecap="round" pathLength="100"/>
+        <path id="arcSpd" d="" fill="none" stroke="var(--fg)" stroke-width="12" stroke-linecap="round" pathLength="100" stroke-dasharray="0 100"/>
+      </svg>
+      <div class="read"><div class="big" id="spd">—</div><div class="unit" id="spdU">MPH</div></div>
+    </div>
+  </section>
+
+  <section class="tiles" id="tiles" aria-label="Sensor readings"></section>
+
+  <section class="panel">
+    <h2>Trouble codes</h2>
+    <div class="row">
+      <button id="btnRead">Read codes</button>
+      <button id="btnClear" class="danger">Clear codes</button>
+    </div>
+    <div class="codes" id="codes"><p class="note">Connect (or use demo mode), then read codes.</p></div>
+  </section>
+
+  <section class="panel">
+    <h2>Logging &amp; units</h2>
+    <div class="row">
+      <button id="btnLog">Start logging</button>
+      <button id="btnCopy">Copy CSV</button>
+      <button id="btnSave">Save CSV</button>
+      <span class="status" id="logN">0 rows</span>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <label class="f"><span class="lbl">Speed</span><select id="uSpd"><option value="mph">mph</option><option value="kmh">km/h</option></select></label>
+      <label class="f"><span class="lbl">Temperature</span><select id="uTemp"><option value="F">°F</option><option value="C">°C</option></select></label>
+      <label class="f"><span class="lbl">Boost</span><select id="uPress"><option value="psi">psi</option><option value="kpa">kPa</option><option value="bar">bar</option></select></label>
+    </div>
+    <p class="note">Logged values are stored in the units you pick above at the moment of capture.</p>
+  </section>
+
+  <section class="panel">
+    <h2>Adapter terminal</h2>
+    <pre id="term"></pre>
+    <form class="row" id="termForm" autocomplete="off">
+      <input type="text" id="termIn" placeholder="e.g. ATRV or 0100" aria-label="Raw command">
+      <button type="submit">Send</button>
+    </form>
+    <p class="note">Sends raw ELM327 commands. Reading only; nothing here writes to the ECU.</p>
+  </section>
+</div>
+
+<script>
+(function(){
+'use strict';
+var $=function(s){return document.querySelector(s)};
+var DTC_INFO={P0016:'Crankshaft/camshaft position correlation',P0087:'Fuel rail pressure too low',P0101:'Mass airflow sensor range',P0113:'Intake air temp sensor high',P0128:'Coolant below thermostat temperature',P0171:'System too lean (bank 1)',P0172:'System too rich (bank 1)',P0234:'Turbo overboost',P0299:'Turbo underboost',P0300:'Random/multiple cylinder misfire',P0301:'Cylinder 1 misfire',P0302:'Cylinder 2 misfire',P0303:'Cylinder 3 misfire',P0304:'Cylinder 4 misfire',P0420:'Catalyst efficiency below threshold (bank 1)',P0442:'EVAP small leak',P0455:'EVAP large leak',P0507:'Idle speed higher than expected'};
+
+/* Sensors. cmd is the OBD-II mode 01 PID; slow ones poll every 5th cycle. */
+var PIDS=[
+ {key:'rpm',cmd:'010C',f:function(b){return (b[0]*256+b[1])/4}},
+ {key:'spd',cmd:'010D',f:function(b){return b[0]}},
+ {key:'thr',cmd:'0111',f:function(b){return b[0]*100/255}},
+ {key:'load',cmd:'0104',f:function(b){return b[0]*100/255}},
+ {key:'map',cmd:'010B',f:function(b){return b[0]}},
+ {key:'cool',cmd:'0105',f:function(b){return b[0]-40},slow:1},
+ {key:'iat',cmd:'010F',f:function(b){return b[0]-40},slow:1},
+ {key:'oil',cmd:'015C',f:function(b){return b[0]-40},slow:1},
+ {key:'volt',cmd:'0142',f:function(b){return (b[0]*256+b[1])/1000},slow:1},
+ {key:'fuel',cmd:'012F',f:function(b){return b[0]*100/255},slow:1},
+ {key:'baro',cmd:'0133',f:function(b){return b[0]},slow:1,hidden:1}
+];
+
+var units={spd:'mph',temp:'F',press:'psi'};
+try{var u=JSON.parse(localStorage.getItem('obd-units')||'null');if(u)units=Object.assign(units,u)}catch(e){}
+var S={vals:{},miss:{},connected:false,demo:false,logging:false,log:[],t0:0};
+
+/* ---------- display ---------- */
+function T(c){return units.temp==='F'?c*9/5+32:c}
+function SP(k){return units.spd==='mph'?k*0.621371:k}
+function boostKpa(){var m=S.vals.map;if(m==null)return null;return m-(S.vals.baro!=null?S.vals.baro:101)}
+function BO(k){return units.press==='psi'?k*0.145038:units.press==='bar'?k/100:k}
+var TILES=[
+ {id:'cool',label:'Coolant',get:function(){return S.vals.cool==null?null:T(S.vals.cool)},u:function(){return '°'+units.temp},d:0,warn:function(v){return S.vals.cool>108}},
+ {id:'boost',label:'Boost / vacuum',get:function(){var b=boostKpa();return b==null?null:BO(b)},u:function(){return units.press},d:1},
+ {id:'thr',label:'Throttle',get:function(){return S.vals.thr},u:function(){return '%'},d:0},
+ {id:'load',label:'Engine load',get:function(){return S.vals.load},u:function(){return '%'},d:0},
+ {id:'iat',label:'Intake air',get:function(){return S.vals.iat==null?null:T(S.vals.iat)},u:function(){return '°'+units.temp},d:0},
+ {id:'oil',label:'Oil temp',get:function(){return S.vals.oil==null?null:T(S.vals.oil)},u:function(){return '°'+units.temp},d:0},
+ {id:'volt',label:'Module voltage',get:function(){return S.vals.volt},u:function(){return 'V'},d:1,warn:function(v){return S.vals.volt<11.8}},
+ {id:'fuel',label:'Fuel level',get:function(){return S.vals.fuel},u:function(){return '%'},d:0}
+];
+var tilesEl=$('#tiles');
+TILES.forEach(function(t){
+  var d=document.createElement('div');d.className='tile';d.id='tile-'+t.id;
+  d.innerHTML='<span class="lbl">'+t.label+'</span><span class="v">—</span><span class="u"></span>';
+  tilesEl.appendChild(d);
+});
+
+function arcPath(cx,cy,r,a0,a1){
+  function p(a){var rad=a*Math.PI/180;return (cx+r*Math.cos(rad)).toFixed(2)+' '+(cy+r*Math.sin(rad)).toFixed(2)}
+  return 'M '+p(a0)+' A '+r+' '+r+' 0 1 1 '+p(a1);
+}
+var ARC=arcPath(100,100,82,135,405);
+document.querySelectorAll('.gauge path').forEach(function(p){p.setAttribute('d',ARC)});
+
+function render(){
+  var v=S.vals;
+  $('#rpm').textContent=v.rpm==null?'—':Math.round(v.rpm);
+  $('#arcRpm').setAttribute('stroke-dasharray',(v.rpm==null?0:Math.min(100,v.rpm/80))+' 100'); /* 8000 rpm full scale */
+  var sp=v.spd==null?null:SP(v.spd);
+  $('#spd').textContent=sp==null?'—':Math.round(sp);
+  $('#spdU').textContent=units.spd==='mph'?'MPH':'KM/H';
+  var full=units.spd==='mph'?160:260;
+  $('#arcSpd').setAttribute('stroke-dasharray',(sp==null?0:Math.min(100,sp/full*100))+' 100');
+  TILES.forEach(function(t){
+    var el=$('#tile-'+t.id),val=t.get();
+    el.querySelector('.v').textContent=val==null?'—':val.toFixed(t.d);
+    el.querySelector('.u').textContent=t.u();
+    el.classList.toggle('warn',val!=null&&t.warn&&t.warn(val));
+  });
+}
+
+function setStatus(txt,mode){
+  $('#stat').textContent=txt;
+  $('#dot').className='dot'+(mode?' '+mode:'');
+  $('#btnDisc').hidden=!(S.connected||S.demo);
+  $('#btnConnect').hidden=S.connected||S.demo;
+  $('#btnDemo').hidden=S.connected||S.demo;
+}
+function err(m){$('#err').textContent=m||''}
+function term(s){var t=$('#term');t.textContent+=s+'\n';t.scrollTop=t.scrollHeight}
+
+/* ---------- ELM327 over BLE ---------- */
+var SERVICES=[0xfff0,0xffe0,0xffe5,0x18f0,'e7810a71-73ae-499d-8c15-faa9aef0c3f2','49535343-fe7d-4ae5-8fa9-9fafd205e455','0000fff0-0000-1000-8000-00805f9b34fb'];
+var dev=null,wChar=null,nChar=null,rx='',pending=null,queue=Promise.resolve(),wake=null;
+
+function onData(ev){
+  var txt=new TextDecoder().decode(ev.target.value);
+  rx+=txt;
+  if(rx.indexOf('>')>=0&&pending){
+    var out=rx.replace('>','').trim();rx='';
+    clearTimeout(pending.t);var p=pending;pending=null;p.res(out);
+  }
+}
+async function writeStr(s){
+  var data=new TextEncoder().encode(s);
+  for(var i=0;i<data.length;i+=20){
+    var c=data.slice(i,i+20);
+    if(wChar.properties.writeWithoutResponse)await wChar.writeValueWithoutResponse(c);
+    else await wChar.writeValue(c);
+  }
+}
+function ask(cmd,timeout){
+  var p=queue.then(function(){
+    return new Promise(function(res,rej){
+      rx='';
+      pending={res:res,t:setTimeout(function(){pending=null;rej(new Error('No reply to '+cmd))},timeout||5000)};
+      term('> '+cmd);
+      writeStr(cmd+'\r').catch(function(e){if(pending){clearTimeout(pending.t);pending=null}rej(e)});
+    });
+  }).then(function(r){term(r.replace(/\r/g,'\n').trim());return r});
+  queue=p.catch(function(){});
+  return p;
+}
+
+function bytesFor(resp,cmd){
+  var c=resp.replace(/[\s\r\n]/g,'').toUpperCase();
+  if(!c||c.indexOf('NODATA')>=0||c.indexOf('UNABLE')>=0||c.indexOf('ERROR')>=0||c.indexOf('?')>=0)return null;
+  var tag='41'+cmd.slice(2),i=c.indexOf(tag);
+  if(i<0)return null;
+  var hex=c.slice(i+4),out=[];
+  for(var k=0;k+1<hex.length;k+=2){var n=parseInt(hex.substr(k,2),16);if(isNaN(n))break;out.push(n)}
+  return out.length?out:null;
+}
+
+async function connect(){
+  err('');
+  if(!navigator.bluetooth){err('This browser has no Web Bluetooth. On iPhone, open this page in the Bluefy browser.');return}
+  try{
+    dev=await navigator.bluetooth.requestDevice({acceptAllDevices:true,optionalServices:SERVICES});
+    setStatus('Connecting…');
+    dev.addEventListener('gattserverdisconnected',function(){if(S.connected)stop('Adapter disconnected')});
+    var server=await dev.gatt.connect();
+    var svcs=await server.getPrimaryServices();
+    for(var s of svcs){
+      var chars=await s.getCharacteristics();
+      for(var c of chars){
+        var p=c.properties;
+        if(!nChar&&(p.notify||p.indicate))nChar=c;
+        if(!wChar&&(p.write||p.writeWithoutResponse))wChar=c;
+      }
+    }
+    if(!nChar||!wChar)throw new Error('Could not find a serial-style characteristic on this device. Check the terminal after trying another adapter service.');
+    await nChar.startNotifications();
+    nChar.addEventListener('characteristicvaluechanged',onData);
+    S.connected=true;S.t0=Date.now();
+    setStatus('Initializing '+(dev.name||'adapter'),'on');
+    await ask('ATZ',4000);
+    for(var cmd of ['ATE0','ATL0','ATS0','ATH0','ATSP0'])await ask(cmd);
+    await ask('0100',12000).catch(function(){});
+    setStatus((dev.name||'Adapter')+' · live','on');
+    try{wake=await navigator.wakeLock.request('screen')}catch(e){}
+    pollLoop();
+  }catch(e){
+    stop();
+    if(e&&e.name!=='NotFoundError')err(e.message||String(e));
+  }
+}
+async function pollLoop(){
+  var n=0;
+  while(S.connected&&!S.demo){
+    for(var p of PIDS){
+      if(!S.connected)break;
+      if(p.slow&&n%5)continue;
+      if((S.miss[p.key]||0)>=3)continue;
+      try{
+        var r=await ask(p.cmd,3000),b=bytesFor(r,p.cmd);
+        if(b){S.vals[p.key]=p.f(b);S.miss[p.key]=0}else S.miss[p.key]=(S.miss[p.key]||0)+1;
+      }catch(e){if(!S.connected)break}
+      render();
+    }
+    n++;logRow();
+  }
+}
+function stop(msg){
+  S.connected=false;S.demo=false;clearInterval(demoT);
+  try{if(dev&&dev.gatt.connected)dev.gatt.disconnect()}catch(e){}
+  try{if(wake)wake.release()}catch(e){}
+  nChar=wChar=dev=null;pending=null;
+  S.vals={};S.miss={};render();
+  setStatus(msg||'Not connected');
+}
+
+/* ---------- demo mode ---------- */
+var demoT=null;
+function demo(){
+  err('');S.demo=true;S.vals={};S.t0=Date.now();
+  setStatus('Demo mode (simulated data)','demo');
+  var t=0;
+  demoT=setInterval(function(){
+    t+=0.12;
+    var th=Math.max(0,Math.sin(t*0.6)*0.5+0.5);
+    S.vals={rpm:900+th*5200+Math.sin(t*3)*40,spd:th*120,thr:th*80,load:20+th*70,map:35+th*160,baro:101,
+      cool:88+Math.sin(t*0.1)*3,iat:34+Math.sin(t*0.05)*2,oil:96+Math.sin(t*0.07)*3,volt:14.1+Math.sin(t)*0.1,fuel:62};
+    render();logRow();
+  },150);
+  render();
+}
+
+/* ---------- trouble codes ---------- */
+function decodeDtcs(resp){
+  var found=[];
+  resp.split(/[\r\n]+/).forEach(function(line){
+    var c=line.replace(/\s/g,'').toUpperCase();
+    if(c.indexOf('43')!==0)return;
+    c=c.slice(2);
+    for(var i=0;i+3<c.length;i+=4){
+      var a=parseInt(c.substr(i,2),16),b=c.substr(i+2,2);
+      if(a===0&&b==='00')continue;
+      var code='PCBU'[a>>6]+((a>>4)&3)+(a&15).toString(16).toUpperCase()+b;
+      if(found.indexOf(code)<0)found.push(code);
+    }
+  });
+  return found;
+}
+function showCodes(list){
+  var el=$('#codes');
+  if(!list.length){el.innerHTML='<p class="note">No stored trouble codes.</p>';return}
+  el.innerHTML=list.map(function(c){
+    return '<div class="code"><b>'+c+'</b><span>'+(DTC_INFO[c]||'No description saved for this code. Search the code with your car model.')+'</span></div>';
+  }).join('');
+}
+var armed=false,armT=null;
+$('#btnRead').onclick=async function(){
+  err('');
+  if(S.demo){showCodes(['P0420','P0171']);return}
+  if(!S.connected){err('Connect the adapter first.');return}
+  try{showCodes(decodeDtcs(await ask('03',8000)))}catch(e){err(e.message)}
+};
+$('#btnClear').onclick=async function(){
+  var b=$('#btnClear');err('');
+  if(!S.connected&&!S.demo){err('Connect the adapter first.');return}
+  if(!armed){armed=true;b.textContent='Tap again to confirm';
+    armT=setTimeout(function(){armed=false;b.textContent='Clear codes'},5000);
+    $('#codes').insertAdjacentHTML('afterbegin','<p class="note" id="warnClr">Clearing also erases freeze-frame data and resets readiness monitors, so an emissions test may fail until the car has been driven.</p>');
+    return}
+  armed=false;clearTimeout(armT);b.textContent='Clear codes';
+  var w=$('#warnClr');if(w)w.remove();
+  if(S.demo){showCodes([]);return}
+  try{await ask('04',8000);showCodes([])}catch(e){err(e.message)}
+};
+
+/* ---------- logging ---------- */
+var COLS=['rpm','spd','thr','load','boost','cool','iat','oil','volt','fuel'];
+function logRow(){
+  if(!S.logging)return;
+  var b=boostKpa(),v=S.vals;
+  S.log.push([((Date.now()-S.t0)/1000).toFixed(2),v.rpm,v.spd==null?'':SP(v.spd),v.thr,v.load,b==null?'':BO(b),v.cool==null?'':T(v.cool),v.iat==null?'':T(v.iat),v.oil==null?'':T(v.oil),v.volt,v.fuel]
+    .map(function(x){return x==null?'':typeof x==='number'?+x.toFixed(2):x}));
+  $('#logN').textContent=S.log.length+' rows';
+}
+function csv(){
+  var head=['seconds','rpm','speed_'+units.spd,'throttle_pct','load_pct','boost_'+units.press,'coolant_'+units.temp,'intake_'+units.temp,'oil_'+units.temp,'volts','fuel_pct'];
+  return [head.join(',')].concat(S.log.map(function(r){return r.join(',')})).join('\n');
+}
+$('#btnLog').onclick=function(){
+  S.logging=!S.logging;
+  $('#btnLog').textContent=S.logging?'Stop logging':'Start logging';
+  $('#btnLog').classList.toggle('primary',S.logging);
+  if(S.logging&&!S.log.length)S.t0=Date.now();
+};
+$('#btnCopy').onclick=async function(){
+  if(!S.log.length){err('Nothing logged yet.');return}
+  try{await navigator.clipboard.writeText(csv());err('')
+    $('#btnCopy').textContent='Copied';setTimeout(function(){$('#btnCopy').textContent='Copy CSV'},1500)}
+  catch(e){term(csv());err('Clipboard blocked. The CSV was printed in the terminal below so you can select it.')}
+};
+$('#btnSave').onclick=function(){
+  if(!S.log.length){err('Nothing logged yet.');return}
+  try{
+    var a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv()],{type:'text/csv'}));
+    a.download='obd-log-'+new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')+'.csv';
+    document.body.appendChild(a);a.click();a.remove();
+  }catch(e){err('Saving is blocked here. Use Copy CSV instead.')}
+};
+
+/* ---------- misc ---------- */
+$('#btnConnect').onclick=connect;
+$('#btnDemo').onclick=demo;
+$('#btnDisc').onclick=function(){stop()};
+$('#termForm').onsubmit=async function(e){
+  e.preventDefault();
+  var i=$('#termIn'),c=i.value.trim();if(!c)return;i.value='';
+  if(!S.connected){term('(not connected)');return}
+  try{await ask(c)}catch(x){term(x.message)}
+};
+[['uSpd','spd'],['uTemp','temp'],['uPress','press']].forEach(function(p){
+  var el=$('#'+p[0]);el.value=units[p[1]];
+  el.onchange=function(){units[p[1]]=el.value;try{localStorage.setItem('obd-units',JSON.stringify(units))}catch(e){}render()};
+});
+render();setStatus('Not connected');
+})();
+</script>
